@@ -2,14 +2,14 @@ import numpy as np
 import streamlit as st
 import pandas as pd
 import plotly.express as px # type: ignore
-from datetime import datetime, timezone
+from datetime import datetime, timezone as dt_timezone
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import os
 from cryptography.fernet import Fernet
 import base64
-from pytz import timezone
+from pytz import timezone as pytz_timezone
 
 # Configuração inicial da página
 st.set_page_config(
@@ -19,7 +19,7 @@ st.set_page_config(
 )
 
 # Configuração de fuso horário
-TIMEZONE = timezone('America/Sao_Paulo')
+TIMEZONE = pytz_timezone('America/Sao_Paulo')
 
 # Função para enviar email
 def send_daily_reminder(task_details):
@@ -299,7 +299,7 @@ with tab4:
     
     if st.button('Testar Configuração de Email'):
         if send_reminder_email("Teste de Configuração", "Este é um email de teste.", 
-                             datetime.now(timezone.utc).date(), 
+                             datetime.now(dt_timezone.utc).date(), 
                              st.session_state.email_config['receiver_email']):
             st.success('✅ Email enviado com sucesso!')
         else:
