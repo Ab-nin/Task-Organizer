@@ -2,7 +2,7 @@ import numpy as np
 import streamlit as st
 import pandas as pd
 import plotly.express as px # type: ignore
-from datetime import datetime, timezone as dt_timezone
+from datetime import datetime, timezone as dt_timezone, timedelta
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -21,7 +21,7 @@ st.set_page_config(
 # Configuração de fuso horário
 TIMEZONE = pytz_timezone('America/Sao_Paulo')
 
-# Função para enviar email
+# Função para enviar email (mantida igual)
 def send_daily_reminder(task_details):
     try:
         smtp_server = 'smtp.gmail.com'
@@ -56,20 +56,15 @@ def send_daily_reminder(task_details):
         return False
     
     
-# Verificação e envio de lembretes diários
+# Função modificada para verificação de horário
 def check_and_send_reminders():
     now = datetime.now(TIMEZONE).date()
     emails_sent = 0
     errors = 0
     
-    if 'responsaveis_emails' not in st.session_state:
-        st.session_state.responsaveis_emails = {}
-    
     for idx, task in st.session_state.tasks.iterrows():
         try:
-            # Verifica se está no período da tarefa
             if task['Início'] <= now <= task['Fim']:
-                # Verifica se já foi enviado hoje
                 last_sent_key = f"último_lembrete_{idx}"
                 if last_sent_key not in st.session_state:
                     st.session_state[last_sent_key] = None
@@ -77,24 +72,17 @@ def check_and_send_reminders():
                 last_sent = st.session_state[last_sent_key]
                 
                 if last_sent is None or last_sent.date() < now:
-                    # Adicionar ou obter email do responsável
                     responsavel = task['Responsável']
+                    email_responsavel = (
+                        st.session_state.responsaveis_emails.get(responsavel, 
+                        st.session_state.email_config['receiver_email'])
+                        if 'Email Responsável' not in task
+                        else task['Email Responsável']
+                    )
                     
-                    # Verifica se temos o email do responsável
-                    if 'Email Responsável' not in task:
-                        if responsavel in st.session_state.responsaveis_emails:
-                            email_responsavel = st.session_state.responsaveis_emails[responsavel]
-                        else:
-                            # Usa o email padrão configurado
-                            email_responsavel = st.session_state.email_config['receiver_email']
-                    else:
-                        email_responsavel = task['Email Responsável']
-                    
-                    # Adiciona o email ao dicionário temporário para task_details
                     task_details = task.to_dict()
                     task_details['Email do Responsável'] = email_responsavel
                     
-                    # Tenta enviar o email
                     if email_responsavel and send_reminder_email(
                         task_details['Tarefa'],
                         task_details['Descrição'],
@@ -103,18 +91,33 @@ def check_and_send_reminders():
                     ):
                         st.session_state[last_sent_key] = datetime.now(TIMEZONE)
                         emails_sent += 1
-                    else:
-                        errors += 1
         except Exception as e:
-            st.error(f"Erro na tarefa {task['Tarefa']}: {str(e)}")
             errors += 1
-    
-    if emails_sent > 0:
-        st.success(f"✅ {emails_sent} lembretes diários enviados com sucesso!")
-    if errors > 0:
-        st.warning(f"⚠️ {errors} lembretes não puderam ser enviados. Verifique as configurações.")
 
     return emails_sent, errors
+
+# Implementação do check_daily_reminders com horário específico
+def check_daily_reminders():
+    if 'last_daily_reminder_check' not in st.session_state:
+        st.session_state.last_daily_reminder_check = None
+    
+    now = datetime.now(TIMEZONE)
+    target_time = now.replace(hour=7, minute=0, second=0, microsecond=0)
+    
+    # Verifica se já passou das 7h e se é a primeira verificação do dia
+    if now >= target_time and (
+        st.session_state.last_daily_reminder_check is None or
+        st.session_state.last_daily_reminder_check.date() < now.date()
+    ):
+        emails_sent, errors = check_and_send_reminders()
+        st.session_state.last_daily_reminder_check = now
+        
+        if emails_sent > 0:
+            st.toast(f"✅ {emails_sent} lembretes enviados às {now.strftime('%H:%M')}")
+        return emails_sent > 0
+    
+    return False
+
 
 # Função para criar uma chave de criptografia
 def get_key():
@@ -248,26 +251,6 @@ def send_reminder_email(task, task_description, date, receiver_email):
         st.error(f"Erro ao enviar email: {str(e)}")
         return False
 
-# Adicionando uma função para verificar e enviar lembretes automaticamente
-# Esta função será chamada cada vez que o aplicativo for carregado
-def check_daily_reminders():
-    if 'last_daily_reminder_check' not in st.session_state:
-        st.session_state.last_daily_reminder_check = None
-    
-    now = datetime.now(TIMEZONE)
-    
-    # Verifica se já enviamos lembretes hoje
-    if st.session_state.last_daily_reminder_check is None or st.session_state.last_daily_reminder_check.date() < now.date():
-        # Se não foi verificado hoje, verifica e envia os lembretes
-        emails_sent, errors = check_and_send_reminders()
-        
-        # Atualiza a data da última verificação
-        st.session_state.last_daily_reminder_check = now
-        
-        return emails_sent > 0
-    
-    return False
-
 # Criação de abas para melhor organização
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Gráfico de Gantt", "📝 Gerenciar Tarefas", "📧 Lembretes", "⚙️ Configurações"])
 
@@ -304,6 +287,14 @@ with tab4:
             st.success('✅ Email enviado com sucesso!')
         else:
             st.error('❌ Falha ao enviar email. Verifique as configurações.')
+
+    # Novo elemento para mostrar o status do agendamento
+    if 'last_daily_reminder_check' in st.session_state and st.session_state.last_daily_reminder_check:
+        next_check = st.session_state.last_daily_reminder_check + timedelta(days=1)
+        next_check = next_check.replace(hour=7, minute=0)
+        st.info(f"**Próximo envio automático:** {next_check.strftime('%d/%m/%Y às %H:%M')}")
+    else:
+        st.info("**Próximo envio automático:** 7:00 do próximo dia útil")
 
 # Nova aba para gerenciar lembretes
 with tab3:
@@ -364,6 +355,19 @@ with tab3:
             """)
     else:
         st.info("Não há tarefas ativas no momento para envio de lembretes.")
+
+    st.subheader("Status do Agendamento")
+    cols = st.columns(2)
+    with cols[0]:
+        if 'last_daily_reminder_check' in st.session_state and st.session_state.last_daily_reminder_check:
+            st.metric("Último envio", st.session_state.last_daily_reminder_check.strftime('%d/%m/%Y %H:%M'))
+        else:
+            st.metric("Último envio", "Nunca")
+    
+    with cols[1]:
+        next_check = datetime.now(TIMEZONE).replace(hour=7, minute=0) + timedelta(days=1)
+        st.metric("Próximo envio previsto", next_check.strftime('%d/%m/%Y %H:%M'))
+
 
 # Aba de Gerenciar Tarefas
 with tab2:
