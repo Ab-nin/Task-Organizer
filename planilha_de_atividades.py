@@ -7,6 +7,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import os
+import json
 from cryptography.fernet import Fernet
 import base64
 from pytz import timezone as pytz_timezone
@@ -20,104 +21,6 @@ st.set_page_config(
 
 # Configuração de fuso horário
 TIMEZONE = pytz_timezone('America/Sao_Paulo')
-
-# Função para enviar email (mantida igual)
-def send_daily_reminder(task_details):
-    try:
-        smtp_server = 'smtp.gmail.com'
-        port = 587
-        
-        message = MIMEMultipart()
-        message['From'] = st.secrets["email"]["sender"]
-        message['To'] = task_details['Email do Responsável'] if 'Email do Responsável' in task_details else task_details.get('Email Responsável', st.session_state.email_config['receiver_email'])
-        message['Subject'] = f'Lembrete Diário: {task_details["Tarefa"]}'
-
-        body = f"""
-        <h3>Lembrete de Tarefa</h3>
-        <p><strong>Tarefa:</strong> {task_details['Tarefa']}</p>
-        <p><strong>Descrição:</strong> {task_details['Descrição']}</p>
-        <p><strong>Período:</strong> {task_details['Início'].strftime('%d/%m/%Y')} - {task_details['Fim'].strftime('%d/%m/%Y')}</p>
-        <p><strong>Dias Restantes:</strong> {(task_details['Fim'] - datetime.now(TIMEZONE).date()).days} dias</p>
-        <p>Por favor, não se esqueça de atualizar o progresso desta tarefa.</p>
-        <hr>
-        <p>Este é um lembrete automático enviado diariamente até a data de conclusão.</p>
-        """
-
-        message.attach(MIMEText(body, 'html'))
-        
-        server = smtplib.SMTP(smtp_server, port)
-        server.starttls()
-        server.login(st.secrets["email"]["sender"], st.secrets["email"]["password"])
-        server.send_message(message)
-        server.quit()
-        return True
-    except Exception as e:
-        st.error(f"Erro ao enviar email: {str(e)}")
-        return False
-    
-    
-# Função modificada para verificação de horário
-def check_and_send_reminders():
-    now = datetime.now(TIMEZONE).date()
-    emails_sent = 0
-    errors = 0
-    
-    for idx, task in st.session_state.tasks.iterrows():
-        try:
-            if task['Início'] <= now <= task['Fim']:
-                last_sent_key = f"último_lembrete_{idx}"
-                if last_sent_key not in st.session_state:
-                    st.session_state[last_sent_key] = None
-                
-                last_sent = st.session_state[last_sent_key]
-                
-                if last_sent is None or last_sent.date() < now:
-                    responsavel = task['Responsável']
-                    email_responsavel = (
-                        st.session_state.responsaveis_emails.get(responsavel, 
-                        st.session_state.email_config['receiver_email'])
-                        if 'Email Responsável' not in task
-                        else task['Email Responsável']
-                    )
-                    
-                    task_details = task.to_dict()
-                    task_details['Email do Responsável'] = email_responsavel
-                    
-                    if email_responsavel and send_reminder_email(
-                        task_details['Tarefa'],
-                        task_details['Descrição'],
-                        f"{task_details['Início']} - {task_details['Fim']}",
-                        email_responsavel
-                    ):
-                        st.session_state[last_sent_key] = datetime.now(TIMEZONE)
-                        emails_sent += 1
-        except Exception as e:
-            errors += 1
-
-    return emails_sent, errors
-
-# Implementação do check_daily_reminders com horário específico
-def check_daily_reminders():
-    if 'last_daily_reminder_check' not in st.session_state:
-        st.session_state.last_daily_reminder_check = None
-    
-    now = datetime.now(TIMEZONE)
-    target_time = now.replace(hour=7, minute=0, second=0, microsecond=0)
-    
-    # Verifica se já passou das 7h e se é a primeira verificação do dia
-    if now >= target_time and (
-        st.session_state.last_daily_reminder_check is None or
-        st.session_state.last_daily_reminder_check.date() < now.date()
-    ):
-        emails_sent, errors = check_and_send_reminders()
-        st.session_state.last_daily_reminder_check = now
-        
-        if emails_sent > 0:
-            st.toast(f"✅ {emails_sent} lembretes enviados às {now.strftime('%H:%M')}")
-        return emails_sent > 0
-    
-    return False
-
 
 # Função para criar uma chave de criptografia
 def get_key():
@@ -155,7 +58,56 @@ if 'tasks' not in st.session_state:
         columns=['Tarefa', 'Descrição', 'Início', 'Fim', 'Responsável', 'Email Responsável']
     )
 
-# Carregar backup se existir
+# Dicionário para armazenar emails dos responsáveis
+if 'responsaveis_emails' not in st.session_state:
+    st.session_state.responsaveis_emails = {}
+
+# Função para salvar emails dos responsáveis
+def save_email_config():
+    try:
+        # Salvamos os emails dos responsáveis em um arquivo separado
+        email_data = {
+            'responsaveis_emails': st.session_state.responsaveis_emails,
+            'email_config': {
+                'sender_email': st.session_state.email_config['sender_email'],
+                'password_encrypted': st.session_state.email_config['password_encrypted'],
+                'receiver_email': st.session_state.email_config['receiver_email']
+            }
+        }
+        
+        # Salva em formato JSON
+        with open('email_config.json', 'w') as f:
+            json.dump(email_data, f)
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar configurações de email: {str(e)}")
+        return False
+
+# Função para carregar emails dos responsáveis
+def load_email_config():
+    try:
+        if os.path.exists('email_config.json'):
+            with open('email_config.json', 'r') as f:
+                email_data = json.load(f)
+                
+                # Carrega emails dos responsáveis
+                if 'responsaveis_emails' in email_data:
+                    st.session_state.responsaveis_emails = email_data['responsaveis_emails']
+                
+                # Carrega configurações de email
+                if 'email_config' in email_data:
+                    st.session_state.email_config = email_data['email_config']
+            return True
+    except Exception as e:
+        st.error(f"Erro ao carregar configurações de email: {str(e)}")
+    return False
+
+# Carrega as configurações de email se não estiverem carregadas
+if 'email_config_loaded' not in st.session_state:
+    load_email_config()
+    st.session_state.email_config_loaded = True
+
+# Carregar backup de tarefas se existir
 if 'data_loaded' not in st.session_state:
     try:
         backup_df = pd.read_csv('backup_tarefas.csv')
@@ -168,12 +120,12 @@ if 'data_loaded' not in st.session_state:
     except:
         st.session_state.data_loaded = True
 
-# Função para salvar backup
+# Função para salvar backup de tarefas
 def save_backup():
     if not st.session_state.tasks.empty:
         st.session_state.tasks.to_csv('backup_tarefas.csv', index=False)
 
-# Função para enviar email
+# Função para enviar email de lembrete
 def send_reminder_email(task, task_description, date, receiver_email):
     if not st.session_state.email_config['sender_email'] or not st.session_state.email_config['password_encrypted']:
         st.warning("Configure seu email antes de enviar lembretes!")
@@ -216,7 +168,7 @@ def send_reminder_email(task, task_description, date, receiver_email):
             return True
         
         # Fallback para SSL se TLS falhar
-        except:
+        except Exception as e:
             smtp_server = "smtp.gmail.com"
             port = 465
             
@@ -251,6 +203,80 @@ def send_reminder_email(task, task_description, date, receiver_email):
         st.error(f"Erro ao enviar email: {str(e)}")
         return False
 
+# Função modificada para verificação e envio correto de lembretes
+def check_and_send_reminders():
+    now = datetime.now(TIMEZONE).date()
+    emails_sent = 0
+    errors = 0
+    
+    for idx, task in st.session_state.tasks.iterrows():
+        try:
+            if task['Início'] <= now <= task['Fim']:
+                last_sent_key = f"último_lembrete_{idx}"
+                if last_sent_key not in st.session_state:
+                    st.session_state[last_sent_key] = None
+                
+                last_sent = st.session_state[last_sent_key]
+                
+                if last_sent is None or last_sent.date() < now:
+                    # Determinar o email do responsável com prioridade correta:
+                    # 1. Primeiro verifica se existe email específico na tarefa
+                    # 2. Se não, verifica no dicionário de responsáveis
+                    # 3. Se não encontrar, usa o email padrão
+                    responsavel = task['Responsável']
+                    email_responsavel = None
+                    
+                    # Verifica email específico na tarefa
+                    if 'Email Responsável' in task and task['Email Responsável']:
+                        email_responsavel = task['Email Responsável']
+                    # Se não tiver, verifica no dicionário de responsáveis
+                    elif responsavel in st.session_state.responsaveis_emails and st.session_state.responsaveis_emails[responsavel]:
+                        email_responsavel = st.session_state.responsaveis_emails[responsavel]
+                    # Caso contrário, usa o email padrão
+                    else:
+                        email_responsavel = st.session_state.email_config['receiver_email']
+                    
+                    if email_responsavel and send_reminder_email(
+                        task['Tarefa'],
+                        task['Descrição'],
+                        f"{task['Início']} - {task['Fim']}",
+                        email_responsavel
+                    ):
+                        # Atualiza o timestamp do último lembrete enviado
+                        st.session_state[last_sent_key] = datetime.now(TIMEZONE)
+                        emails_sent += 1
+                    else:
+                        errors += 1
+        except Exception as e:
+            st.error(f"Erro ao processar lembrete para {task['Tarefa']}: {str(e)}")
+            errors += 1
+
+    return emails_sent, errors
+
+# Implementação melhorada do check_daily_reminders
+def check_daily_reminders():
+    if 'last_daily_reminder_check' not in st.session_state:
+        st.session_state.last_daily_reminder_check = None
+    
+    now = datetime.now(TIMEZONE)
+    target_time = now.replace(hour=7, minute=0, second=0, microsecond=0)
+    
+    # Verifica se já passou das 7h e se é a primeira verificação do dia
+    if now >= target_time and (
+        st.session_state.last_daily_reminder_check is None or
+        st.session_state.last_daily_reminder_check.date() < now.date()
+    ):
+        emails_sent, errors = check_and_send_reminders()
+        st.session_state.last_daily_reminder_check = now
+        
+        if emails_sent > 0:
+            st.toast(f"✅ {emails_sent} lembretes enviados às {now.strftime('%H:%M')}")
+        if errors > 0:
+            st.warning(f"⚠️ {errors} lembretes não puderam ser enviados")
+        return emails_sent > 0
+    
+    return False
+
 # Criação de abas para melhor organização
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Gráfico de Gantt", "📝 Gerenciar Tarefas", "📧 Lembretes", "⚙️ Configurações"])
 
@@ -260,29 +286,40 @@ with tab4:
     st.warning("⚠️ Use uma 'Senha de App' do Google em vez de sua senha normal para maior segurança.")
     st.info("Para criar uma senha de app: Acesse sua conta Google → Segurança → Autenticação de duas etapas → Senhas de app")
     
-    st.session_state.email_config['sender_email'] = st.text_input(
-        'Email Remetente (Gmail)',
-        value=st.session_state.email_config['sender_email']
-    )
-    
-    # Usando password criptografado
-    password_input = st.text_input(
-        'Senha do App Gmail',
-        type='password'
-    )
-    
-    if password_input:
-        # Só atualiza se houver alguma entrada
-        st.session_state.email_config['password_encrypted'] = encrypt_text(password_input)
-    
-    st.session_state.email_config['receiver_email'] = st.text_input(
-        'Email Padrão para Receber Lembretes',
-        value=st.session_state.email_config['receiver_email']
-    )
-    
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.session_state.email_config['sender_email'] = st.text_input(
+            'Email Remetente (Gmail)',
+            value=st.session_state.email_config['sender_email']
+        )
+        
+        # Usando password criptografado
+        password_input = st.text_input(
+            'Senha do App Gmail',
+            type='password'
+        )
+        
+        if password_input:
+            # Só atualiza se houver alguma entrada
+            st.session_state.email_config['password_encrypted'] = encrypt_text(password_input)
+
+    with col2:
+        st.session_state.email_config['receiver_email'] = st.text_input(
+            'Email Padrão para Receber Lembretes',
+            value=st.session_state.email_config['receiver_email'],
+            help="Este email será usado quando não houver email específico para um responsável"
+        )
+        
+        if st.button('Salvar Configurações de Email'):
+            if save_email_config():
+                st.success('✅ Configurações de email salvas com sucesso!')
+            else:
+                st.error('❌ Erro ao salvar configurações de email.')
+
     if st.button('Testar Configuração de Email'):
         if send_reminder_email("Teste de Configuração", "Este é um email de teste.", 
-                             datetime.now(dt_timezone.utc).date(), 
+                             datetime.now(dt_timezone.utc).date().strftime('%d/%m/%Y'), 
                              st.session_state.email_config['receiver_email']):
             st.success('✅ Email enviado com sucesso!')
         else:
@@ -302,28 +339,49 @@ with tab3:
     st.markdown("""
     ### Lembretes Diários Automáticos
     
-    Os lembretes são enviados automaticamente uma vez por dia para os responsáveis por tarefas que estão em andamento (dentro do período entre a data de início e fim).
+    Os lembretes são enviados automaticamente uma vez por dia (às 7:00) para os responsáveis por tarefas que estão em andamento (dentro do período entre a data de início e fim).
     """)
     
-    # Dicionário para armazenar emails dos responsáveis
-    if 'responsaveis_emails' not in st.session_state:
-        st.session_state.responsaveis_emails = {}
-    
     st.subheader("Cadastrar Emails dos Responsáveis")
-    
+
     # Obtém lista única de responsáveis
     if not st.session_state.tasks.empty:
         responsaveis = sorted(st.session_state.tasks['Responsável'].unique())
         
+        # Cria uma tabela para edição de emails
+        email_data = []
         for resp in responsaveis:
-            email_resp = st.text_input(
-                f"Email de {resp}",
-                value=st.session_state.responsaveis_emails.get(resp, ""),
-                key=f"email_{resp}"
-            )
+            email_data.append({
+                "Responsável": resp,
+                "Email": st.session_state.responsaveis_emails.get(resp, "")
+            })
+        
+        email_df = pd.DataFrame(email_data)
+        
+        edited_emails = st.data_editor(
+            email_df,
+            column_config={
+                "Responsável": st.column_config.TextColumn("Responsável", disabled=True),
+                "Email": st.column_config.TextColumn("Email", help="Email para envio de lembretes")
+            },
+            hide_index=True,
+            key="email_editor"
+        )
+        
+        # Botão para salvar emails
+        if st.button("Salvar Emails dos Responsáveis"):
+            # Atualiza o dicionário de emails
+            for _, row in edited_emails.iterrows():
+                if row["Email"]:  # Só salva se tiver algum valor
+                    st.session_state.responsaveis_emails[row["Responsável"]] = row["Email"]
             
-            if email_resp:
-                st.session_state.responsaveis_emails[resp] = email_resp
+            # Salva em arquivo
+            if save_email_config():
+                st.success("✅ Emails dos responsáveis salvos com sucesso!")
+            else:
+                st.error("❌ Erro ao salvar emails dos responsáveis.")
+    else:
+        st.info("Cadastre tarefas primeiro para gerenciar emails dos responsáveis.")
     
     st.subheader("Verificação Manual de Lembretes")
     
@@ -333,6 +391,8 @@ with tab3:
             st.success(f"✅ {emails_sent} lembretes enviados com sucesso!")
         else:
             st.info("Nenhum lembrete precisava ser enviado agora.")
+        if errors > 0:
+            st.warning(f"⚠️ {errors} lembretes não puderam ser enviados.")
     
     st.subheader("Status dos Lembretes")
     
@@ -349,9 +409,20 @@ with tab3:
     
     if not active_tasks.empty:
         for i, task in active_tasks.iterrows():
+            email_responsavel = ""
+            
+            # Define qual email está sendo usado para esta tarefa
+            if 'Email Responsável' in task and task['Email Responsável']:
+                email_responsavel = f"Email: {task['Email Responsável']}"
+            elif task['Responsável'] in st.session_state.responsaveis_emails:
+                email_responsavel = f"Email: {st.session_state.responsaveis_emails[task['Responsável']]}"
+            else:
+                email_responsavel = f"Email: {st.session_state.email_config['receiver_email']} (padrão)"
+            
             st.markdown(f"""
             **{task['Tarefa']}** - Responsável: {task['Responsável']}  
-            *De {task['Início']} até {task['Fim']}*
+            *De {task['Início']} até {task['Fim']}*  
+            {email_responsavel}
             """)
     else:
         st.info("Não há tarefas ativas no momento para envio de lembretes.")
@@ -366,7 +437,11 @@ with tab3:
     
     with cols[1]:
         next_check = datetime.now(TIMEZONE).replace(hour=7, minute=0) + timedelta(days=1)
-        st.metric("Próximo envio previsto", next_check.strftime('%d/%m/%Y %H:%M'))
+        if datetime.now(TIMEZONE).hour >= 7:
+            st.metric("Próximo envio previsto", next_check.strftime('%d/%m/%Y %H:%M'))
+        else:
+            today_check = datetime.now(TIMEZONE).replace(hour=7, minute=0)
+            st.metric("Próximo envio previsto", today_check.strftime('%d/%m/%Y %H:%M'))
 
 
 # Aba de Gerenciar Tarefas
@@ -565,12 +640,18 @@ with tab1:
         
         with col3:
             if st.button('📧 Enviar Lembrete'):
-                email_to_use = selected_task.get('Email Responsável', '')
-                if not email_to_use:
-                    email_to_use = st.session_state.responsaveis_emails.get(
-                        selected_task['Responsável'], 
-                        st.session_state.email_config['receiver_email']
-                    )
+                # Determinar o email correto para enviar, seguindo a mesma prioridade
+                # 1. Email específico da tarefa
+                # 2. Email do responsável
+                # 3. Email padrão
+                email_to_use = None
+                
+                if 'Email Responsável' in selected_task and selected_task['Email Responsável']:
+                    email_to_use = selected_task['Email Responsável']
+                elif selected_task['Responsável'] in st.session_state.responsaveis_emails and st.session_state.responsaveis_emails[selected_task['Responsável']]:
+                    email_to_use = st.session_state.responsaveis_emails[selected_task['Responsável']]
+                else:
+                    email_to_use = st.session_state.email_config['receiver_email']
                 
                 if send_reminder_email(
                     selected_task['Tarefa'], 
